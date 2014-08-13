@@ -1,48 +1,9 @@
-// -*- C++ -*-
-//
-// Package:    Test/MiniAnalyzer
-// Class:      MiniMuTauAnalyzer
-// 
-/**\class MiniMuTauAnalyzer MiniMuTauAnalyzer.cc Test/MiniAnalyzer/plugins/MiniMuTauAnalyzer.cc
 
- Description: [one line class summary]
-
- Implementation:
-     [Notes on implementation]
-*/
-//
-// Original Author:  Michal Bluj
-//         Created:  Tue, 08 Jul 2014 10:44:22 GMT
-//
-//
-
-
-// system include files
-#include <memory>
+#include "MiniMuTauAnalyzer.h"
 
 // user include files
-#include "FWCore/Framework/interface/Frameworkfwd.h"
-#include "FWCore/Framework/interface/EDAnalyzer.h"
-
-#include "FWCore/Framework/interface/Event.h"
-#include "FWCore/Framework/interface/MakerMacros.h"
-
-#include "FWCore/ParameterSet/interface/ParameterSet.h"
-
-#include "DataFormats/VertexReco/interface/VertexFwd.h"
-#include "DataFormats/VertexReco/interface/Vertex.h"
-#include "DataFormats/PatCandidates/interface/Electron.h"
-#include "DataFormats/PatCandidates/interface/Muon.h"
-#include "DataFormats/PatCandidates/interface/Tau.h"
-#include "DataFormats/PatCandidates/interface/Jet.h"
-#include "DataFormats/PatCandidates/interface/MET.h"
-
 #include "FWCore/ServiceRegistry/interface/Service.h"
 #include "CommonTools/UtilAlgos/interface/TFileService.h"
-
-#include "Test/MiniAnalyzer/interface/MuonObj.h"
-#include "Test/MiniAnalyzer/interface/TauObj.h"
-#include "Test/MiniAnalyzer/interface/DiTauObj.h"
 
 //Standalone SVFit///
 #include "TauAnalysis/SVfitStandalone/interface/SVfitStandaloneAlgorithm.h"
@@ -53,77 +14,6 @@
 #include "DataFormats/PatCandidates/interface/PackedGenParticle.h"
 
 #include "CommonTools/UtilAlgos/interface/DeltaR.h"
-
-#include "TFile.h"
-#include "TTree.h"
-#include "TH1F.h"
-
-
-#include <vector>
-#include <string>
-#include <utility>
-#include <map>
-#include <math.h>
-
-//
-// class declaration
-//
-
-class MiniMuTauAnalyzer : public edm::EDAnalyzer {
-
-public:
-  explicit MiniMuTauAnalyzer(const edm::ParameterSet&);
-  ~MiniMuTauAnalyzer();
-
-  static void fillDescriptions(edm::ConfigurationDescriptions& descriptions);
-
-
-private:
-  virtual void beginJob() override;
-  virtual void analyze(const edm::Event&, const edm::EventSetup&) override;
-  virtual void endJob() override;
-  
-  //virtual void beginRun(edm::Run const&, edm::EventSetup const&) override;
-  //virtual void endRun(edm::Run const&, edm::EventSetup const&) override;
-  //virtual void beginLuminosityBlock(edm::LuminosityBlock const&, edm::EventSetup const&) override;
-  //virtual void endLuminosityBlock(edm::LuminosityBlock const&, edm::EventSetup const&) override;
-
-  bool muonId(const pat::Muon&, bool checkLoose=false);
-  int findGenDecayMode(const reco::GenJet&);
-  int findDecayMode(const pat::Tau&);
-
-  int match(const reco::Candidate *, const edm::View<reco::Candidate> *,
-	    float, int&, float dPtmax=-1, float Ptmin=0, bool byPt=false);
-
-  // ----------member data ---------------------------
-private:
-  // tokens
-  edm::EDGetTokenT<reco::VertexCollection> vtxToken_;
-  edm::EDGetTokenT<pat::MuonCollection> muonToken_;
-  edm::EDGetTokenT<pat::TauCollection> tauToken_;
-  edm::EDGetTokenT<pat::METCollection> metToken_;
-
-  edm::EDGetTokenT<edm::View<reco::Candidate> > genTauJetsToken_;
-  edm::EDGetTokenT<reco::GenParticleCollection> prunedGenParticlesToken_;
-
-  TFile* file_;
-  TTree* tree_;
-
-  std::vector<MuonObj> *myMuons_;
-  std::vector<TauObj> *myTaus_;
-  std::vector<DiTauObj> *myDiTaus_;
-
-  bool isMC_;
-
-};
-
-//
-// constants, enums and typedefs
-//
-
-//
-// static data member definitions
-//
 
 //
 // constructors and destructor
@@ -144,7 +34,11 @@ MiniMuTauAnalyzer::MiniMuTauAnalyzer(const edm::ParameterSet& iConfig){
 
   myMuons_  = new std::vector<MuonObj>;
   myTaus_   = new std::vector<TauObj>;
+  myJets_   = new std::vector<JetObj>;
+  myMets_   = new std::vector<MetObj>;
   myDiTaus_ = new std::vector<DiTauObj>;
+
+  theEvent_ = EventObj();
 
 }
 
@@ -155,6 +49,8 @@ MiniMuTauAnalyzer::~MiniMuTauAnalyzer(){
   // (e.g. close files, deallocate resources etc.)
   delete myMuons_;
   delete myTaus_;
+  delete myJets_;
+  delete myMets_;
   delete myDiTaus_;
 
 }
@@ -172,8 +68,13 @@ void MiniMuTauAnalyzer::analyze(const edm::Event& iEvent, const edm::EventSetup&
   //clear (move to special method)
   myMuons_->clear();
   myTaus_->clear();
+  myJets_->clear();
+  myMets_->clear();
   myDiTaus_->clear();
   
+  //basic event info
+  theEvent_.setRunInfo(iEvent.run(), iEvent.luminosityBlock(), (iEvent.eventAuxiliary()).event(), isMC_, 1);
+
 #ifdef THIS_IS_AN_EVENT_EXAMPLE
   Handle<ExampleData> pIn;
   iEvent.getByLabel("example",pIn);
@@ -390,6 +291,20 @@ void MiniMuTauAnalyzer::analyze(const edm::Event& iEvent, const edm::EventSetup&
 
   edm::Handle<pat::METCollection> mets;
   iEvent.getByToken(metToken_, mets);
+  for(const pat::MET &met : *mets) {
+    MetObj aMet(met.pt(),met.phi());
+    aMet.nAllMets = mets->size();
+    aMet.sumEt = met.sumEt();
+    aMet.sig = met.significance();
+    const TMatrixD cov = met.getSignificanceMatrix();
+    const double* elements;
+    aMet.setSigMatrix(elements[0],elements[3],elements[1],elements[2]);
+    if(isMC_ && met.genMET()!=0 ){
+      aMet.genMetPt = met.genMET()->pt();
+      aMet.genMetPhi = met.genMET()->phi();
+    }
+    myMets_->push_back(aMet);
+  }
 
   //Build di-taus
   for(unsigned int iMu=0; iMu<myMuons_->size(); ++iMu){
@@ -471,8 +386,11 @@ void MiniMuTauAnalyzer::beginJob() {
   edm::Service<TFileService> fs;
   tree_ = fs->make<TTree>("tree","muTau tree");
 
+  tree_->Branch("event","EventObj",&theEvent_);
   tree_->Branch("muons","std::vector<MuonObj>",&myMuons_);
   tree_->Branch("taus","std::vector<TauObj>",&myTaus_);
+  tree_->Branch("jets","std::vector<JetObj>",&myJets_);
+  tree_->Branch("mets","std::vector<MetObj>",&myMets_);
   tree_->Branch("diTaus","std::vector<DiTauObj>",&myDiTaus_);
 
 }
